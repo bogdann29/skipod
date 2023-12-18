@@ -37,20 +37,21 @@ void print_array(float A[N])
     fprintf(stderr, "==END   DUMP_ARRAYS==\n");
 }
 
-void save_into_file(MPI_Comm comm, char *filename, int start_index, int end_index)
+void save_into_file(char *filename, int start_index, int end_index)
 {
     MPI_File file;
-    if(!MPI_File_open(comm, filename, MPI_MODE_CREATE | MPI_MODE_WRONLY, MPI_INFO_NULL, &file))
-        fprintf(stderr, "can't open the file %s\n", filename);
+    MPI_File_open(MPI_COMM_WORLD, filename, MPI_MODE_CREATE | MPI_MODE_RDWR, MPI_INFO_NULL, &file);
+        // fprintf(stderr, "can't open the file %s\n", filename);
+    printf("file has been opened\n");
     MPI_File_write(file, &start_index, 1, MPI_INT, MPI_STATUS_IGNORE);
     MPI_File_write(file, &end_index, 1, MPI_INT, MPI_STATUS_IGNORE);
     MPI_File_close(&file);
 }
 
-void read_from_file(MPI_Comm comm, char *filename, int *start_index, int *end_index)
+void read_from_file(char *filename, int *start_index, int *end_index)
 {
     MPI_File file;
-    if(!MPI_File_open(comm, filename, MPI_MODE_RDONLY, MPI_INFO_NULL, &file))
+    if(!MPI_File_open(MPI_COMM_WORLD, filename, MPI_MODE_RDWR, MPI_INFO_NULL, &file))
         fprintf(stderr, "can't open the file %s\n", filename);
     MPI_File_read(file, start_index, 1, MPI_INT, MPI_STATUS_IGNORE);
     MPI_File_read(file, end_index, 1, MPI_INT, MPI_STATUS_IGNORE);
@@ -58,7 +59,9 @@ void read_from_file(MPI_Comm comm, char *filename, int *start_index, int *end_in
 }
 
 void my_errhandler(MPI_Comm *comm, int *err, ...) {
-    int size = 0, rank = 0, new_size = 0, new_rank = 0, num_failed = 0, num_dead = 0, i = 0, dead_start_index = 0, dead_end_index = 0;
+    int size, rank;
+    int num_failed = 0, num_dead = 0;
+    
     int *procs = NULL;
     char dead_filename[20];
     MPI_Group group_failed;
@@ -73,6 +76,7 @@ void my_errhandler(MPI_Comm *comm, int *err, ...) {
         printf("More than 1 proc failed.\n");
     }
 
+    int new_rank, new_size;
     MPIX_Comm_shrink(my_comm_world, &my_comm_world);
     MPI_Comm_rank(my_comm_world, &new_rank);
     MPI_Comm_size(my_comm_world, &new_size);
@@ -80,6 +84,8 @@ void my_errhandler(MPI_Comm *comm, int *err, ...) {
     procs = (int*)malloc(sizeof(int) * new_size);
     MPI_Barrier(my_comm_world);
     MPI_Gather(&rank, 1, MPI_INT, procs, 1, MPI_INT, 0, my_comm_world);
+
+    int dead_start_idx = 0, dead_end_idx = 0, i = 0;
     if (new_rank == 0) {
         for (i = 0; i < new_size - 1; ++i) {
             if (procs[i + 1] - procs[i] > 1) {
@@ -90,9 +96,9 @@ void my_errhandler(MPI_Comm *comm, int *err, ...) {
             num_dead = 3;
         }
         printf("Dead proc num: %d\n", num_dead);
-        sprintf(dead_filename, "./files/%d.txt", num_dead);
-        read_from_file(*comm, dead_filename, &dead_start_index, &dead_end_index);
-        save_into_file(*comm, "./files/todo.txt", dead_start_index, dead_end_index);
+        sprintf(dead_filename, "%d.txt", num_dead);
+        read_from_file(dead_filename, &dead_start_idx, &dead_end_idx);
+        save_into_file("todo.txt", dead_start_idx, dead_end_idx);
     }
 }
 
@@ -108,7 +114,7 @@ int main(int argc, char** argv)
     float (*A)[n]; A = (float(*)[n])malloc ((n) * sizeof(float));
     float (*B)[n]; B = (float(*)[n])malloc ((n) * sizeof(float));
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    sprintf(filename, "./files/%d.txt", rank);
+    sprintf(filename, "%d.txt", rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     my_comm_world = MPI_COMM_WORLD;
     MPI_Status status[2];
@@ -119,7 +125,7 @@ int main(int argc, char** argv)
     MPI_Comm_create_errhandler(my_errhandler, &my_errh);
     MPI_Comm_set_errhandler(MPI_COMM_WORLD, my_errh);
     MPI_Barrier(my_comm_world);
-    
+    // printf("process_rank = %d, num_processes = %d\n", rank, size);
     int start_index = (int)(n * rank / size);
     if (start_index == 0)
     {
@@ -130,9 +136,11 @@ int main(int argc, char** argv)
     {
         end_index -= 1;
     }
+    // printf("start = %d, end = %d\n", start_index, end_index);
 
-    save_into_file(MPI_COMM_WORLD, filename, start_index, end_index);
-    
+    save_into_file(filename, start_index, end_index);
+    printf("start = %d, end = %d\n", start_index, end_index);
+
     for (i = start_index; i < end_index; i++) {
         (*B)[i] = 0.33333 * ((*A)[i-1] + (*A)[i] + (*A)[i+1]);
     }
@@ -147,7 +155,7 @@ int main(int argc, char** argv)
 
     if (start_index == 1)
     {
-        read_from_file(MPI_COMM_WORLD, "./files/todo.txt", &backup_start_index, &backup_end_index);
+        read_from_file("todo.txt", &backup_start_index, &backup_end_index);
         printf("%d %d\n", backup_start_index, backup_end_index);
         for (i = backup_start_index; i < backup_end_index; i++) {
             (*B)[i] = 0.33333 * ((*A)[i-1] + (*A)[i] + (*A)[i+1]);
