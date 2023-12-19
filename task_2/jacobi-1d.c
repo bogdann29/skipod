@@ -12,7 +12,7 @@
 #define N 30
 #define KILLED_PROC_NUM 3
 
-MPI_Comm my_comm_world;
+MPI_Comm comm;
 
 void init_array(int n, float A[N], float B[N])
 {
@@ -40,25 +40,34 @@ void print_array(float A[N])
 void save_into_file(char *filename, int start_index, int end_index)
 {
     MPI_File file;
-    MPI_File_open(MPI_COMM_WORLD, filename, MPI_MODE_CREATE | MPI_MODE_RDWR, MPI_INFO_NULL, &file);
-        // fprintf(stderr, "can't open the file %s\n", filename);
-    printf("file has been opened\n");
-    MPI_File_write(file, &start_index, 1, MPI_INT, MPI_STATUS_IGNORE);
-    MPI_File_write(file, &end_index, 1, MPI_INT, MPI_STATUS_IGNORE);
+    MPI_Info info;
+    printf("start = %d, end = %d, filename = %s\n", start_index, end_index, filename);
+    char error_string[100];
+    int error_code, result_length = 100;
+    error_code = MPI_File_open(comm, filename, MPI_MODE_CREATE | MPI_MODE_RDWR, info, &file);
+    if (error_code != MPI_SUCCESS) {
+        MPI_Error_string(error_code, error_string, &result_length);
+        printf("MPI error: %sn", error_string);
+    }
+    printf("file was opened\n");
+    fflush(stdout);
+    int idxs[2] = {start_index, end_index};
+    MPI_File_write(file, idxs, 2, MPI_INT, MPI_STATUS_IGNORE);
+    MPI_Barrier(comm);
     MPI_File_close(&file);
 }
 
 void read_from_file(char *filename, int *start_index, int *end_index)
 {
     MPI_File file;
-    if(!MPI_File_open(MPI_COMM_WORLD, filename, MPI_MODE_RDWR, MPI_INFO_NULL, &file))
-        fprintf(stderr, "can't open the file %s\n", filename);
-    MPI_File_read(file, start_index, 1, MPI_INT, MPI_STATUS_IGNORE);
-    MPI_File_read(file, end_index, 1, MPI_INT, MPI_STATUS_IGNORE);
+    MPI_File_open(comm, filename, MPI_MODE_RDWR, MPI_INFO_NULL, &file);
+    int idxs[2];
+    MPI_File_read(file, idxs, 2, MPI_INT, MPI_STATUS_IGNORE);
+    MPI_Barrier(comm);
     MPI_File_close(&file);
 }
 
-void my_errhandler(MPI_Comm *comm, int *err, ...) {
+void my_errhandler(MPI_Comm *com, int *err, ...) {
     int size, rank;
     int num_failed = 0, num_dead = 0;
     
@@ -66,24 +75,24 @@ void my_errhandler(MPI_Comm *comm, int *err, ...) {
     char dead_filename[20];
     MPI_Group group_failed;
       
-    MPI_Comm_size(my_comm_world, &size);
-    MPI_Comm_rank(my_comm_world, &rank);
+    MPI_Comm_size(comm, &size);
+    MPI_Comm_rank(comm, &rank);
 
-    MPIX_Comm_failure_ack(my_comm_world);
-    MPIX_Comm_failure_get_acked(my_comm_world, &group_failed);
+    MPIX_Comm_failure_ack(comm);
+    MPIX_Comm_failure_get_acked(comm, &group_failed);
     MPI_Group_size(group_failed, &num_failed);
     if (num_failed > 1) {
         printf("More than 1 proc failed.\n");
     }
 
     int new_rank, new_size;
-    MPIX_Comm_shrink(my_comm_world, &my_comm_world);
-    MPI_Comm_rank(my_comm_world, &new_rank);
-    MPI_Comm_size(my_comm_world, &new_size);
+    MPIX_Comm_shrink(comm, &comm);
+    MPI_Comm_rank(comm, &new_rank);
+    MPI_Comm_size(comm, &new_size);
 
     procs = (int*)malloc(sizeof(int) * new_size);
-    MPI_Barrier(my_comm_world);
-    MPI_Gather(&rank, 1, MPI_INT, procs, 1, MPI_INT, 0, my_comm_world);
+    MPI_Barrier(comm);
+    MPI_Gather(&rank, 1, MPI_INT, procs, 1, MPI_INT, 0, comm);
 
     int dead_start_idx = 0, dead_end_idx = 0, i = 0;
     if (new_rank == 0) {
@@ -116,7 +125,7 @@ int main(int argc, char** argv)
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     sprintf(filename, "%d.txt", rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
-    my_comm_world = MPI_COMM_WORLD;
+    comm = MPI_COMM_WORLD;
     MPI_Status status[2];
     MPI_Request request[2];
 
@@ -124,7 +133,7 @@ int main(int argc, char** argv)
 
     MPI_Comm_create_errhandler(my_errhandler, &my_errh);
     MPI_Comm_set_errhandler(MPI_COMM_WORLD, my_errh);
-    MPI_Barrier(my_comm_world);
+    MPI_Barrier(comm);
     // printf("process_rank = %d, num_processes = %d\n", rank, size);
     int start_index = (int)(n * rank / size);
     if (start_index == 0)
@@ -149,7 +158,7 @@ int main(int argc, char** argv)
         raise(SIGKILL);
     }
 
-    MPI_Barrier(my_comm_world);
+    MPI_Barrier(comm);
 
     printf("%d %d\n", start_index, end_index);
 
