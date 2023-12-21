@@ -13,14 +13,15 @@
 #define KILLED_PROC_NUM 3
 
 MPI_Comm comm;
+int dead_proc = 0;
 
-void init_array(int n, float A[N], float B[N])
+void init_array(int start, int end, float A[N], float B[N])
 {
     int i;
-    for (i = 0; i < n; i++)
+    for (i = start; i < end; i++)
     {
-        A[i] = ((float)i+2) / n;
-        B[i] = ((float)i+3) / n;
+        A[i-start] = ((float)i+2) / N;
+        B[i-start] = ((float)i+3) / N;
     }
 }
 
@@ -37,46 +38,72 @@ void print_array(float A[N])
     fprintf(stderr, "==END   DUMP_ARRAYS==\n");
 }
 
-void save_into_file(char *filename, int start_index, int end_index)
+void save_into_file(char *filename, int start_index, int end_index, float* A, float* B)
 {
-    MPI_File file;
-    MPI_Info info;
-    printf("start = %d, end = %d, filename = %s\n", start_index, end_index, filename);
-    char error_string[100];
-    int error_code, result_length = 100;
-    error_code = MPI_File_open(comm, filename, MPI_MODE_CREATE | MPI_MODE_RDWR, info, &file);
-    if (error_code != MPI_SUCCESS) {
-        MPI_Error_string(error_code, error_string, &result_length);
-        printf("MPI error: %sn", error_string);
-    }
-    printf("file was opened\n");
-    fflush(stdout);
+    MPI_File fh;
+    MPI_File_open(comm, filename, MPI_MODE_RDWR | MPI_MODE_CREATE, MPI_INFO_NULL, &fh);
     int idxs[2] = {start_index, end_index};
-    MPI_File_write(file, idxs, 2, MPI_INT, MPI_STATUS_IGNORE);
-    MPI_Barrier(comm);
-    MPI_File_close(&file);
+    MPI_File_write_at(fh, 0, idxs, 2, MPI_INT, MPI_STATUS_IGNORE);
+    MPI_File_write_at(fh, sizeof(int) * 2, A, end_index-start_index, MPI_FLOAT, MPI_STATUS_IGNORE);
+    MPI_File_write_at(fh, sizeof(int) * 2 + (end_index-start_index)*sizeof(float), B, end_index-start_index, MPI_FLOAT, MPI_STATUS_IGNORE);
+
+    MPI_File_close(&fh);
+
+    // int cnt = 0;
+    // FILE *fd = fopen(filename, "wb");
+    // fwrite(&start_index, sizeof(int), 1, fds);
+    // fwrite(&end_index, sizeof(int), 1, fd);
+    // fwrite(A, sizeof(float), end_index-start_index, fd);
+    // fwrite(B, sizeof(float), end_index-start_index, fd);
+    // fclose(fd);
 }
 
-void read_from_file(char *filename, int *start_index, int *end_index)
+void read_from_file(char *filename, int *start_index, int *end_index, float** A, float** B)
 {
-    MPI_File file;
-    MPI_File_open(comm, filename, MPI_MODE_RDWR, MPI_INFO_NULL, &file);
-    int idxs[2];
-    MPI_File_read(file, idxs, 2, MPI_INT, MPI_STATUS_IGNORE);
-    MPI_Barrier(comm);
-    MPI_File_close(&file);
+    MPI_File fh;
+    MPI_File_open(comm, filename, MPI_MODE_RDWR, MPI_INFO_NULL, &fh);
+    MPI_File_read_at(fh, 0, start_index, 1, MPI_INT, MPI_STATUS_IGNORE);
+    MPI_File_read_at(fh, sizeof(int), end_index, 1, MPI_INT, MPI_STATUS_IGNORE);
+
+    int part_size = *end_index - *start_index;
+    // printf("start = %d, end = %d, part = %d\n", *start_index, *end_index, part_size);
+
+    *A = (float*)malloc(part_size * sizeof(float));
+    *B = (float*)malloc(part_size * sizeof(float));
+    MPI_File_read_at(fh, sizeof(int) * 2, *A, part_size, MPI_FLOAT, MPI_STATUS_IGNORE);
+    MPI_File_read_at(fh, sizeof(int) * 2 + (part_size)*sizeof(float), *B, part_size, MPI_FLOAT, MPI_STATUS_IGNORE);
+
+    MPI_File_close(&fh);
+    // FILE *fd = fopen(filename, "rb");
+    // fread(start_index,  sizeof(int), 1, fd);
+    // fread(end_index,  sizeof(int), 1, fd);
+
+    // int part_size = *end_index - *start_index;
+    // printf("start = %d, end = %d, part = %d\n", *start_index, *end_index, part_size);
+
+    // *A = (float*)malloc(part_size * sizeof(float));
+    // *B = (float*)malloc(part_size * sizeof(float));
+
+    // fread(*A, sizeof(float), part_size, fd);
+    // fread(*B, sizeof(float), part_size, fd);
+    // // for(int i = 0; i < part_size; ++i)
+    // //     printf("%f ",A[i]);
+    // fflush(stdout);
+    // fclose(fd);
 }
 
 void my_errhandler(MPI_Comm *com, int *err, ...) {
     int size, rank;
-    int num_failed = 0, num_dead = 0;
+    MPI_Comm_rank(comm, &rank);
+    printf("rank = %d\n", rank);
     
-    int *procs = NULL;
     char dead_filename[20];
     MPI_Group group_failed;
       
     MPI_Comm_size(comm, &size);
     MPI_Comm_rank(comm, &rank);
+
+    int num_failed;
 
     MPIX_Comm_failure_ack(comm);
     MPIX_Comm_failure_get_acked(comm, &group_failed);
@@ -90,107 +117,119 @@ void my_errhandler(MPI_Comm *com, int *err, ...) {
     MPI_Comm_rank(comm, &new_rank);
     MPI_Comm_size(comm, &new_size);
 
-    procs = (int*)malloc(sizeof(int) * new_size);
+    int *procs = (int*)malloc(sizeof(int) * new_size);
     MPI_Barrier(comm);
     MPI_Gather(&rank, 1, MPI_INT, procs, 1, MPI_INT, 0, comm);
 
-    int dead_start_idx = 0, dead_end_idx = 0, i = 0;
+    int dead_start_idx, dead_end_idx;
+
     if (new_rank == 0) {
-        for (i = 0; i < new_size - 1; ++i) {
+        for (int i = 0; i < new_size - 1; ++i) {
             if (procs[i + 1] - procs[i] > 1) {
-                num_dead = procs[i] + 1;
+                dead_proc = procs[i] + 1;
             }
         }
-        if (num_dead == 0) {
-            num_dead = 3;
+        if (dead_proc == 0) {
+            dead_proc = procs[new_size-1] + 1;
         }
-        printf("Dead proc num: %d\n", num_dead);
-        sprintf(dead_filename, "%d.txt", num_dead);
-        read_from_file(dead_filename, &dead_start_idx, &dead_end_idx);
-        save_into_file("todo.txt", dead_start_idx, dead_end_idx);
+        printf("Dead proc num: %d\n", dead_proc);
+        sprintf(dead_filename, "%d", dead_proc);
+        float *A, *B;
+        read_from_file(dead_filename, &dead_start_idx, &dead_end_idx, &A, &B);
+        save_into_file("tmp", dead_start_idx, dead_end_idx, A, B);
+        free(A);
+        free(B);
     }
+
+    free(procs);
 }
 
 int main(int argc, char** argv)
 {
     MPI_Init(&argc, &argv);
 
-    int tsteps = TSTEPS, n = N, i = 0, number_of_requests = 0, killed_proc = 0, backup_start_index = 0, backup_end_index = 0;
+    int tsteps = TSTEPS, n = N, i = 0;
     int rank = 0, size = 0;
     char filename[20];
     MPI_Errhandler my_errh;
+    MPI_Status status;
 
-    float (*A)[n]; A = (float(*)[n])malloc ((n) * sizeof(float));
-    float (*B)[n]; B = (float(*)[n])malloc ((n) * sizeof(float));
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    sprintf(filename, "%d.txt", rank);
+    sprintf(filename, "%d", rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
-    comm = MPI_COMM_WORLD;
-    MPI_Status status[2];
-    MPI_Request request[2];
+    size--;
 
-    init_array(n, *A, *B);
+    int start_index = (int)(n * rank / size);
+    int end_index = (int)(n * (rank + 1)/ size); //не включается
+    int part_size = end_index - start_index;
+
+    float *A, *B; 
 
     MPI_Comm_create_errhandler(my_errhandler, &my_errh);
     MPI_Comm_set_errhandler(MPI_COMM_WORLD, my_errh);
-    MPI_Barrier(comm);
-    // printf("process_rank = %d, num_processes = %d\n", rank, size);
-    int start_index = (int)(n * rank / size);
-    if (start_index == 0)
-    {
-        start_index += 1;
-    }
-    int end_index = (int)(n * (rank + 1) / size);
-    if (end_index == n)
-    {
-        end_index -= 1;
-    }
-    // printf("start = %d, end = %d\n", start_index, end_index);
-
-    save_into_file(filename, start_index, end_index);
-    printf("start = %d, end = %d\n", start_index, end_index);
-
-    for (i = start_index; i < end_index; i++) {
-        (*B)[i] = 0.33333 * ((*A)[i-1] + (*A)[i] + (*A)[i+1]);
-    }
-
-    if (rank == KILLED_PROC_NUM) {
-        raise(SIGKILL);
-    }
-
+    comm = MPI_COMM_WORLD;
     MPI_Barrier(comm);
 
-    printf("%d %d\n", start_index, end_index);
+    if(rank != size + 1){
+        A = (float*)malloc(part_size * sizeof(float));
+        B = (float*)malloc(part_size * sizeof(float));
 
-    if (start_index == 1)
-    {
-        read_from_file("todo.txt", &backup_start_index, &backup_end_index);
-        printf("%d %d\n", backup_start_index, backup_end_index);
-        for (i = backup_start_index; i < backup_end_index; i++) {
-            (*B)[i] = 0.33333 * ((*A)[i-1] + (*A)[i] + (*A)[i+1]);
+        init_array(start_index, end_index, A, B);
+
+        // printf("process_rank = %d, num_processes = %d\n", rank, size);
+
+        printf("start = %d, end = %d\n", start_index, end_index);
+
+        for (i = 1; i < part_size - 1; i++) {
+            B[i] = 0.33333 * (A[i-1] + A[i] + A[i+1]);
         }
-        MPI_Irecv(&((*B)[end_index]), 1, MPI_FLOAT, rank+1, 1200, MPI_COMM_WORLD, &request[0]);
-        number_of_requests = 1;
+
+        save_into_file(filename, start_index, end_index, A, B);
+
+        if (rank == KILLED_PROC_NUM) {
+            raise(SIGKILL);
+        }
     }
-    else if (end_index == n - 1)
-    {
-        MPI_Isend(&((*B)[start_index]), 1, MPI_FLOAT, rank-1, 1199 + rank, MPI_COMM_WORLD, &request[0]);
-        number_of_requests = 1;
+    MPI_Barrier(comm);
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+
+    float left, right;
+
+    sprintf(filename, "%d", rank);
+    free(A);
+    free(B);
+    read_from_file(filename, &start_index, &end_index, &A, &B);
+    part_size = end_index - start_index;
+    MPI_Barrier(comm);
+    if(rank == 0){
+        MPI_Send(&(A[part_size - 1]), 1, MPI_FLOAT, rank + 1, 0, comm);
+        MPI_Recv(&right, 1, MPI_FLOAT, rank + 1, 0, comm, &status);
+        
+        B[part_size-1] = 0.33333 * (A[part_size-2] + A[part_size-1] + right);
+        // printf("rank = %d, B[last] = %f\n", rank, B[part_size-1]);
     }
-    else
-    {
-        MPI_Isend(&((*B)[start_index]), 1, MPI_FLOAT, rank-1, 1199 + rank, MPI_COMM_WORLD, &request[0]);
-        MPI_Irecv(&((*B)[end_index]), 1, MPI_FLOAT, rank+1, 1200 + rank, MPI_COMM_WORLD, &request[1]);
-        number_of_requests = 2;
+
+    else if (rank == size - 1){
+        MPI_Recv(&left, 1, MPI_FLOAT, rank - 1, 0, comm, &status);
+        MPI_Send(A, 1, MPI_FLOAT, rank - 1, 0, comm);
+        B[0] = 0.33333 * (left + A[0] + A[1]); 
+        // printf("rank = %d, B[0] = %f\n", rank, B[0]);
     }
-    /*
-    if (rank == 0) {
-        print_array(*A);
-        print_array(*B);
+    else{
+        // printf("0 rank = %d, B[0] = %f\n", rank, B[0]);
+        MPI_Recv(&left, 1, MPI_FLOAT, rank - 1, 0, comm, &status);
+        MPI_Send(&(A[part_size - 1]), 1, MPI_FLOAT, rank + 1, 0, comm);
+        MPI_Recv(&right, 1, MPI_FLOAT, rank + 1, 0, comm, &status);
+        MPI_Send(A, 1, MPI_FLOAT, rank - 1, 0, comm);
+        B[0] = 0.33333 * (left + A[0] + A[1]); 
+        B[part_size-1] = 0.33333 * (A[part_size-2] + A[part_size-1] + right);
+        // printf("rank = %d, B[0] = %f\n", rank, B[0]);
     }
-    */
-    free((void*)A);
-    free((void*)B);
+    printf("end rank = %d\n", rank);
+    MPI_Barrier(comm);
+    free(A);
+    free(B);
     
     MPI_Finalize();
 
